@@ -24,7 +24,7 @@ class DataProcessing:
         self.schema_section = schema_section
         
 
-    def extract(self,script_dir,input_folder):
+    def extract(self,root_key:None,script_dir,input_folder):
 
         self.script_dir = script_dir
         try:
@@ -38,9 +38,10 @@ class DataProcessing:
                     # Open the JSON file and read its contents
                     with open(j_file, 'r') as file:
                         data = json.load(file)
-                        df = pd.DataFrame(data)
+                        transactions = data.get(root_key, [])
+                        df_trans = pd.DataFrame(transactions)
 
-                    return True, data
+                    return True, df_trans
 
                 else:
                     return False, "Empty or too many files in the directory"
@@ -49,23 +50,27 @@ class DataProcessing:
                 return False, "Invalid location or empy file path"
             
         except Exception as e:
-            print(f"Error while reading file: {e}")
+            return False, f"Error while reading file: {e}"
         
                     
 
 
-    def process_data(self,data,json_root_key: str):
+    def process_data(self,data,error_col:list,schema_temp_col:list):
+        self.error_col = error_col
+        self.schema_temp_col = schema_temp_col
+
+        # Dependency injection to achieve loose coupling and maintainability of the code
         injector_dependency = Injector([DependencyModule()])
         self.reader = injector_dependency.get(ConfigReader)
         self.reader.setConfig(self.config_path)
         self.reader.readConfig()
         transformed_data = []
         error_data = []
-        transactions = data.get(json_root_key, [])
+
         # print(f"Number of record is {len(transactions)}")
         # return None,None
 
-        for record in transactions:
+        for index,record in data.itterrows():
             try:
                 transformed_record, error_record = self._process_record(record)
                 if transformed_record:
@@ -73,82 +78,41 @@ class DataProcessing:
                 if error_record:
                     error_data.append(error_record)
             except Exception as e:
-                error_data.append({
-                    'customer_id': record.get('customerId'),
-                    'transaction_id': record.get('transactionId'),
-                    'error_message': str(f'Error in processing data due to: {e}')
-                })
-        trans_data = {
+                filtered_error_col = [record[i] for i in self.error_col if i != 'error_message']
+                filtered_error_col.append(str(f'Error in processing data due to: {e}'))
+                error_data.append(pd.Series(filtered_error_col, index=self.error_col))
+                
+        df_trans_data = pd.DataFrame(transformed_data)
+        df_error_log_data = pd.DataFrame(error_data)
 
-            json_root_key:json.loads(json.dumps(transformed_data))
-
-        }
-        error_log_data = {
-
-            'errors': json.loads(json.dumps(error_data))
-
-        }
-
-        return trans_data, error_log_data
+        return df_trans_data, df_error_log_data
     
 
     def _process_record(self, record):
+        
+        filtered_error_col = [record[i] for i in self.error_col if i != 'error_message']
+        trans_col_record = [record[i] for i in self.schema_temp_col]
         # instance_with_injection = injector.create_object(MyClass, file_path=file_path_value)
-
         allowedCur = AllowedCurrencyValidator(self.currency_section,self.reader)
         allowedCur.readCurrency()
         if not allowedCur.validate(record['currency']):
-            return None, {
-                'customer_id': record['customerId'],
-                'transaction_id': record['transactionId'],
-                'error_message': 'Invalid currency'
-            }   
+            filtered_error_col.append(str(f'Invalid currency: {record['currency']}'))
+            return None, pd.Series(filtered_error_col, index=self.error_col)
 
         try:
             # Convert data type to confirm to PostgeSQL transactions table - Data Mapping
-            transaction_date = datetime.strptime(record['transactionDate'], '%Y-%m-%d').date()
-            parsed_date = datetime.strptime(record['sourceDate'], "%Y-%m-%dT%H:%M:%S")
-            source_date = parsed_date.strftime('%Y-%m-%d %H:%M:%S')
-            amount = float(record['amount'])
+            record['transactionDate'] = pd.to_datetime(record['transactionDate'], format='%Y-%m-%d').dt.date
+            record['sourceDate'] = pd.to_datetime(record['sourceDate'], format="%Y-%m-%dT%H:%M:%S").strftime('%Y-%m-%d %H:%M:%S')
+            record['amount'] = pd.to_numeric(record['amount'],errors='raise')
 
         except Exception as e:
-            return None, {
-                'customer_id': record['customerId'],
-                'transaction_id': record['transactionId'],
-                'error_message': str(f'Invalid format: {e}')
-            }
+            filtered_error_col.append(str(f'Invalid format: {e}'))
+            return None, pd.Series(filtered_error_col, index=self.error_col)
 
-        transformed_record = {
-            'customer_id': record['customerId'],
-            'transaction_id': record['transactionId'],
-            'transaction_date': str(transaction_date),
-            'source_date': str(source_date),
-            'merchant_id': record['merchantId'],
-            'category_id': record['categoryId'],
-            'amount': amount,
-            'description': record['description'],
-            'currency': record['currency']
-        }
-        # DQ checks, schema validation 
-        flag, err_msg = self._check_schema(transformed_record)
-
-        if not flag:
-            return None, {
-                'customer_id': record['customerId'],
-                'transaction_id': record['transactionId'],
-                'error_message': err_msg
-            }
+        trans_series_rec = pd.Series(trans_col_record, index=self.schema_temp_col)
         
-        return transformed_record, None
-    
-    def _check_schema(self, record):
-        #Schema checks for data type and structure to ensure DQ"""
-        schema = SchemaValidator(self.schema_section,self.reader)
-        schema.readSchema_config()
-        flag , err_msg = schema.validate(record)
-
-        return flag, err_msg
-    
+        return trans_series_rec, None
+     
     def remove_duplicates(self, data,transactions_key, composite_keys, source_date_key):
         
         #Removes duplicates from JSON file based on configuration.
