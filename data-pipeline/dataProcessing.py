@@ -70,7 +70,7 @@ class DataProcessing:
         # print(f"Number of record is {len(transactions)}")
         # return None,None
 
-        for index,record in data.itterrows():
+        for index,record in data.iterrows():
             try:
                 transformed_record, error_record = self._process_record(record)
                 if transformed_record:
@@ -108,56 +108,40 @@ class DataProcessing:
         except Exception as e:
             filtered_error_col.append(str(f'Invalid format: {e}'))
             return None, pd.Series(filtered_error_col, index=self.error_col)
-
+        
         trans_series_rec = pd.Series(trans_col_record, index=self.schema_temp_col)
         
         return trans_series_rec, None
+    
      
-    def remove_duplicates(self, data,transactions_key, composite_keys, source_date_key):
+    def remove_duplicates(self, data,composite_keys, source_date_key):
         
         #Removes duplicates from JSON file based on configuration.
         rem = JSONDuplicateRemover(self.duplicate_section,self.reader)
-        config = rem.readJSON_config()
-        self.transaction_key = config.get(transactions_key)
-        self.composite_keys = config.get(composite_keys).split(',')
-        self.source_date_key = config.get(source_date_key)
+        config_dict = rem.readJSON_config()
+        self.composite_keys = config_dict.get(composite_keys).split(',')
+        self.source_date_key = config_dict.get(source_date_key)
+        filtered_data = rem.filter_duplicates(data, self.composite_keys, self.source_date_key)
 
-        filtered_data = rem.filter_duplicates(data, self.transaction_key, self.composite_keys, self.source_date_key)
-
-        
         return filtered_data
     
-    def transform_data(self,data,root_key,col_key,new_root_key,date_key,*columns):
+    def transform_data(self,data,col_key,date_key,columns:list):
 
-        # Convert the extracted data to JSON format
-        distinct_customers = {}
-
-        for customer in data[root_key]:
-            customer_id = customer[col_key]
-            if customer_id not in distinct_customers:
-                distinct_customers[customer_id] = {column: customer[column] for column in columns}
-            else:
-                current_date = datetime.fromisoformat(customer[date_key])
-                existing_date = datetime.fromisoformat(distinct_customers[customer_id][date_key])
-                if current_date > existing_date:
-                    distinct_customers[customer_id] = {column: customer[column] for column in columns}
-
-        customers_list = list(distinct_customers.values())
-        customers_data = {
-                new_root_key:json.loads(json.dumps(customers_list, indent=4))
-        }
-
-        return customers_data
+        data_sort = data.sort_values(by=date_key, ascending=False)
+        data_transform = data_sort[[col for col in columns]]
+        data_transform.drop_duplicate(subset=col_key,keep='first')
+        
+        return data_transform
     
     def load_data(self, data,root_key,tbl,sql_folder,filename):
         try:
             db_handler = DBHandler(self.db_section_name,self.reader)
             conn = db_handler.connect_to_database()
             with conn.cursor() as cursor:
-                for record in data[root_key]:   
-                    columns = list(record.keys())
+                for index,record in data.iterrows():   
+                    columns = record.index.tolist()
                     # values = [record[column] for column in columns]
-                    values = list(record.values())
+                    values = record.values.tolist()
                     with open(os.path.join(sql_folder, filename), 'r') as query_file:
                             
                         query_template= query_file.read().strip()

@@ -22,40 +22,22 @@ class JSONDuplicateRemover:
         else:
             return {}
 
-    def load_json(self, input_file_dir,filename):
-        #Loads JSON data from a file
-        config_file_path = os.path.join(self.script_dir, '..', input_file_dir, filename)
+    def filter_duplicates(self, data,composite_keys, source_date_key):
 
-        with open(config_file_path, 'r') as file:
-            data = json.load(file)
+        #Removes duplicates from JSON data based on composite keys
+        data = data.sort_values(by=source_date_key, ascending=False)
+        data = data.drop_duplicates(subset=[i for i in composite_keys], keep='first')
+        
         return data
 
-    def filter_duplicates(self, data, transaction_key, composite_keys, source_date_key):
-        #Removes duplicates from JSON data based on composite keys
-        empty_list = []
-        unique_transactions = defaultdict(dict)
+    def save_json(self,data,key,output_file_dir,filename):
 
-        for transaction in data[transaction_key]:
-
-            if transaction is not None:
-                composite_key = tuple(transaction[key] for key in composite_keys)
-                # print("Details: ",composite_key)
-                # return None
-                if composite_key not in unique_transactions:
-                    unique_transactions[composite_key] = transaction
-                else:
-                    current_source_date = datetime.fromisoformat(transaction[source_date_key])
-                    existing_source_date = datetime.fromisoformat(unique_transactions[composite_key][source_date_key])
-                    if current_source_date > existing_source_date:
-                        unique_transactions[composite_key] = transaction
-
-        filtered_transactions = list(unique_transactions.values())
-        return {transaction_key: filtered_transactions}
-
-    def save_json(self, data, output_file_dir,filename):
         #Saves JSON data to a file
+        json_data = data.to_json(orient='records')
+        js_data = json.loads(json_data)
+        root_js_data = {key:js_data}
         current_dir = os.getcwd()
         config_file_path = os.path.join(current_dir,output_file_dir, filename)
 
         with open(config_file_path, 'w') as file:
-            json.dump(data, file, indent=4)
+            json.dump(root_js_data, file, indent=4)
